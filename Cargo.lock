@@ -4429,6 +4429,7 @@ dependencies = [
  "rustc_target",
  "tempfile",
  "tracing",
+ "twox-hash 2.1.2",
 ]
 
 [[package]]
