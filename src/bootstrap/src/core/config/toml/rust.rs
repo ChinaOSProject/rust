@@ -81,6 +81,7 @@ define_config! {
         parallel_frontend_threads: Option<u32> = "parallel-frontend-threads",
         stdlib_semver_baseline: Option<String> = "stdlib-semver-baseline",
         wasm_proc_macros: Option<bool> = "wasm-proc-macros",
+        loongarch_oldworld: Option<bool> = "loongarch-oldworld",
     }
 }
 
@@ -352,6 +353,7 @@ pub fn check_incompatible_options_for_ci_rustc(
         channel,
         default_linker,
         std_features,
+        loongarch_oldworld,
 
         // Rest of the options can simply be ignored.
         incremental: _,
@@ -422,6 +424,7 @@ pub fn check_incompatible_options_for_ci_rustc(
     err!(current_rust_config.default_linker, default_linker, "rust");
     err!(current_rust_config.stack_protector, stack_protector, "rust");
     err!(current_rust_config.std_features, std_features, "rust");
+    err!(current_rust_config.loongarch_oldworld, loongarch_oldworld, "rust");
 
     warn!(current_rust_config.channel, channel, "rust");
 

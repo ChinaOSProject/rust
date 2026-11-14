@@ -203,6 +203,12 @@ fn rust_optimize() {
 }
 
 #[test]
+fn rust_loongarch_oldworld_defaults_off_and_can_be_enabled() {
+    assert!(!parse("").rust_loongarch_oldworld);
+    assert!(parse("rust.loongarch-oldworld = true").rust_loongarch_oldworld);
+}
+
+#[test]
 #[should_panic(expected = "Duplicate value 'llvm' for 'rust.codegen-backends'")]
 fn rejects_duplicate_codegen_backends() {
     parse_codegen_backends(

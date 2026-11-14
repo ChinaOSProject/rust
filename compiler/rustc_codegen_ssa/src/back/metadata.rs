@@ -26,6 +26,11 @@ use tracing::debug;
 use super::apple;
 use crate::diagnostics;
 
+const LOONGARCH_OLDWORLD: bool = match option_env!("RUSTC_LOONGARCH_OLDWORLD") {
+    Some(value) => value.as_bytes().len() == 1 && value.as_bytes()[0] == b'1',
+    None => false,
+};
+
 /// The default metadata loader. This is used by cg_llvm and cg_clif.
 ///
 /// # Metadata location
@@ -352,18 +357,7 @@ pub(super) fn elf_e_flags(architecture: Architecture, sess: &Session) -> u32 {
         }
         Architecture::LoongArch32 | Architecture::LoongArch64 => {
             // Source: https://github.com/loongson/la-abi-specs/blob/release/laelf.adoc#e_flags-identifies-abi-type-and-version
-            let mut e_flags: u32 = elf::EF_LARCH_OBJABI_V1;
-
-            // Set the appropriate flag based on ABI
-            // This needs to match LLVM `LoongArchELFStreamer.cpp`
-            match &sess.target.llvm_abiname {
-                LlvmAbi::Ilp32s | LlvmAbi::Lp64s => e_flags |= elf::EF_LARCH_ABI_SOFT_FLOAT,
-                LlvmAbi::Ilp32f | LlvmAbi::Lp64f => e_flags |= elf::EF_LARCH_ABI_SINGLE_FLOAT,
-                LlvmAbi::Ilp32d | LlvmAbi::Lp64d => e_flags |= elf::EF_LARCH_ABI_DOUBLE_FLOAT,
-                _ => bug!("unknown LoongArch ABI name"),
-            }
-
-            e_flags
+            loongarch_elf_e_flags(&sess.target.llvm_abiname, LOONGARCH_OLDWORLD)
         }
         Architecture::Avr => {
             // Resolve the ISA revision and set
@@ -401,6 +395,37 @@ pub(super) fn elf_e_flags(architecture: Architecture, sess: &Session) -> u32 {
         }
         Architecture::Sparc32Plus => elf::EF_SPARC_32PLUS,
         _ => 0,
+    }
+}
+
+fn loongarch_elf_e_flags(abi: &LlvmAbi, oldworld: bool) -> u32 {
+    let abi_flags = match abi {
+        LlvmAbi::Ilp32s | LlvmAbi::Lp64s => elf::EF_LARCH_ABI_SOFT_FLOAT,
+        LlvmAbi::Ilp32f | LlvmAbi::Lp64f => elf::EF_LARCH_ABI_SINGLE_FLOAT,
+        LlvmAbi::Ilp32d | LlvmAbi::Lp64d => elf::EF_LARCH_ABI_DOUBLE_FLOAT,
+        _ => bug!("unknown LoongArch ABI name"),
+    };
+
+    if oldworld { abi_flags } else { abi_flags | elf::EF_LARCH_OBJABI_V1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loongarch_elf_flags_preserve_modern_and_oldworld_encodings() {
+        for (abi, float_flags) in [
+            (&LlvmAbi::Lp64s, 0x1),
+            (&LlvmAbi::Lp64f, 0x2),
+            (&LlvmAbi::Lp64d, 0x3),
+            (&LlvmAbi::Ilp32s, 0x1),
+            (&LlvmAbi::Ilp32f, 0x2),
+            (&LlvmAbi::Ilp32d, 0x3),
+        ] {
+            assert_eq!(loongarch_elf_e_flags(abi, true), float_flags);
+            assert_eq!(loongarch_elf_e_flags(abi, false), float_flags | 0x40);
+        }
     }
 }
 

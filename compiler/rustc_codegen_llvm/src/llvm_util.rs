@@ -16,14 +16,21 @@ use rustc_middle::bug;
 use rustc_session::Session;
 use rustc_session::config::{NATIVE_CPU, PrintKind, PrintRequest};
 use rustc_target::spec::{
-    Arch, CfgAbi, Env, MergeFunctions, Os, PanicStrategy, SmallDataThresholdSupport,
+    Arch, CfgAbi, Env, LlvmAbi, MergeFunctions, Os, PanicStrategy, SmallDataThresholdSupport,
 };
 use smallvec::{SmallVec, smallvec};
 
-use crate::back::write::create_informational_target_machine;
+use crate::back::owned_target_machine::OwnedTargetMachine;
+use crate::back::write::{
+    create_informational_target_machine, create_target_machine_with_features,
+};
 use crate::{diagnostics, llvm};
 
 static INIT: Once = Once::new();
+pub(crate) const LOONGARCH_OLDWORLD: bool = match option_env!("RUSTC_LOONGARCH_OLDWORLD") {
+    Some(value) => value.as_bytes().len() == 1 && value.as_bytes()[0] == b'1',
+    None => false,
+};
 
 pub(crate) fn init(sess: &Session) {
     unsafe {
@@ -236,7 +243,11 @@ impl<'a> IntoIterator for LLVMFeature<'a> {
 /// `llvm-project` submodule in <https://github.com/rust-lang/rust/tree/HEAD/src> Though note that
 /// Rust can also be build with an external precompiled version of LLVM which might lead to failures
 /// if the oldest tested / supported LLVM version doesn't yet support the relevant intrinsics.
-pub(crate) fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> Option<LLVMFeature<'a>> {
+pub(crate) fn to_llvm_features<'a>(
+    sess: &Session,
+    s: &'a str,
+    available_llvm_features: Option<&FxHashSet<&str>>,
+) -> Option<LLVMFeature<'a>> {
     let (major, _, _) = get_version();
     match sess.target.arch {
         Arch::AArch64 | Arch::Arm64EC => {
@@ -298,6 +309,10 @@ pub(crate) fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> Option<LLVMFea
             "gc" if major < 22 => None,
             s => Some(LLVMFeature::new(s)),
         },
+        Arch::LoongArch32 | Arch::LoongArch64 => {
+            loongarch_llvm_feature(s, LOONGARCH_OLDWORLD, available_llvm_features)
+                .map(LLVMFeature::new)
+        }
         Arch::X86 | Arch::X86_64 => {
             match s {
                 "sse4.2" => Some(LLVMFeature::with_dependencies(
@@ -335,17 +350,33 @@ pub(crate) fn to_llvm_features<'a>(sess: &Session, s: &'a str) -> Option<LLVMFea
     }
 }
 
+pub(crate) fn target_feature_names<'a>(sess: &Session, features: &[&'a str]) -> Vec<&'a str> {
+    if features.is_empty() {
+        return Vec::new();
+    }
+    let oldworld_target_machine = ensure_oldworld_llvm_compat(sess);
+    let available_llvm_features =
+        oldworld_target_machine.as_ref().and_then(|tm| oldworld_llvm_feature_names(sess, tm.raw()));
+    features
+        .iter()
+        .flat_map(|feature| {
+            to_llvm_features(sess, feature, available_llvm_features.as_ref()).into_iter().flatten()
+        })
+        .collect()
+}
+
 /// Used to generate cfg variables and apply features.
 /// Must express features in the way Rust understands them.
 ///
 /// We do not have to worry about RUSTC_SPECIFIC_FEATURES here, those are handled outside codegen.
 pub(crate) fn target_config(sess: &Session) -> TargetConfig {
     let target_machine = create_informational_target_machine(sess, true);
+    let available_llvm_features = oldworld_llvm_feature_names(sess, target_machine.raw());
 
     let internal_target_features = internal_target_features(
         sess,
         |feature| {
-            to_llvm_features(sess, feature)
+            to_llvm_features(sess, feature, available_llvm_features.as_ref())
                 .map(|f| SmallVec::<[&str; 2]>::from_iter(f.into_iter()))
                 .unwrap_or_default()
         },
@@ -353,7 +384,7 @@ pub(crate) fn target_config(sess: &Session) -> TargetConfig {
             // This closure determines whether the target CPU has the feature according to LLVM. We
             // do *not* consider the `-Ctarget-feature`s here, as that will be handled later in
             // `internal_target_features`.
-            if let Some(feat) = to_llvm_features(sess, feature) {
+            if let Some(feat) = to_llvm_features(sess, feature, available_llvm_features.as_ref()) {
                 // All the LLVM features this expands to must be enabled.
                 for llvm_feature in feat {
                     let cstr = SmallCStr::new(llvm_feature);
@@ -380,6 +411,12 @@ pub(crate) fn target_config(sess: &Session) -> TargetConfig {
     };
 
     update_target_reliable_float_cfg(sess, &mut cfg);
+    if available_llvm_features.as_ref().is_some_and(|features| {
+        features.contains("fp64") && !features.contains("f") && !features.contains("d")
+    }) {
+        cfg.has_reliable_f16 = false;
+        cfg.has_reliable_f16_math = false;
+    }
     cfg
 }
 
@@ -499,6 +536,87 @@ fn llvm_target_features(tm: &llvm::TargetMachine) -> Vec<(&str, &str)> {
     ret
 }
 
+fn llvm_target_feature_names(tm: &llvm::TargetMachine) -> FxHashSet<&str> {
+    llvm_target_features(tm).into_iter().map(|(feature, _)| feature).collect()
+}
+
+fn oldworld_llvm_feature_names<'a>(
+    sess: &Session,
+    tm: &'a llvm::TargetMachine,
+) -> Option<FxHashSet<&'a str>> {
+    (LOONGARCH_OLDWORLD && matches!(sess.target.arch, Arch::LoongArch32 | Arch::LoongArch64))
+        .then(|| llvm_target_feature_names(tm))
+}
+
+fn loongarch_llvm_feature<'a>(
+    feature: &'a str,
+    oldworld: bool,
+    available_llvm_features: Option<&FxHashSet<&str>>,
+) -> Option<&'a str> {
+    if oldworld {
+        let available_llvm_features = available_llvm_features?;
+        let llvm_feature =
+            if matches!(feature, "f" | "d") && !available_llvm_features.contains(feature) {
+                "fp64"
+            } else {
+                feature
+            };
+        available_llvm_features.contains(llvm_feature).then_some(llvm_feature)
+    } else {
+        Some(feature)
+    }
+}
+
+fn oldworld_loongarch_abi_supported(abi: &LlvmAbi) -> bool {
+    matches!(abi, LlvmAbi::Ilp32d | LlvmAbi::Lp64d)
+}
+
+fn oldworld_loongarch_feature_override_unsupported(feature: &str) -> bool {
+    matches!(
+        feature,
+        "-f" | "-d" | "-fp64" | "+single-float" | "-single-float" | "+soft-float" | "-soft-float"
+    )
+}
+
+fn ensure_oldworld_llvm_compat(sess: &Session) -> Option<OwnedTargetMachine> {
+    if !LOONGARCH_OLDWORLD || !matches!(sess.target.arch, Arch::LoongArch32 | Arch::LoongArch64) {
+        return None;
+    }
+    if !oldworld_loongarch_abi_supported(&sess.target.llvm_abiname) {
+        sess.dcx().fatal(format!(
+            "LoongArch oldworld code generation requires an LP64D or ILP32D target ABI"
+        ));
+    }
+
+    let override_is_unsupported = sess
+        .opts
+        .cg
+        .target_feature
+        .split(',')
+        .chain(sess.opts.unstable_opts.llvm_target_feature.split(','))
+        .any(oldworld_loongarch_feature_override_unsupported)
+        || sess
+            .target
+            .options
+            .features
+            .split(',')
+            .any(oldworld_loongarch_feature_override_unsupported);
+    if override_is_unsupported {
+        sess.dcx().fatal(format!(
+            "LoongArch oldworld code generation cannot override ABI-required floating-point features"
+        ));
+    }
+
+    let tm = create_target_machine_with_features(sess, &[]);
+    let llvm_features = llvm_target_feature_names(tm.raw());
+    if !llvm_features.contains("fp64") && !llvm_features.contains("d") {
+        sess.dcx().fatal(format!(
+            "LoongArch oldworld code generation requires an LLVM backend with a D floating-point feature"
+        ));
+    }
+    Some(tm)
+}
+
 pub(crate) fn print(req: &PrintRequest, out: &mut String, sess: &Session) {
     require_inited();
     let tm = create_informational_target_machine(sess, false);
@@ -564,6 +682,7 @@ fn print_target_cpus(sess: &Session, tm: &llvm::TargetMachine, out: &mut String)
 
 fn print_target_features(sess: &Session, tm: &llvm::TargetMachine, out: &mut String) {
     let mut llvm_target_features = llvm_target_features(tm);
+    let available_llvm_features = oldworld_llvm_feature_names(sess, tm);
     let mut known_llvm_target_features = FxHashSet::<&'static str>::default();
     let mut rustc_target_features = sess
         .target
@@ -576,7 +695,8 @@ fn print_target_features(sess: &Session, tm: &llvm::TargetMachine, out: &mut Str
             }
             // LLVM asserts that these are sorted. LLVM and Rust both use byte comparison for these
             // strings.
-            let llvm_feature = to_llvm_features(sess, *feature)?.llvm_feature_name;
+            let llvm_feature = to_llvm_features(sess, *feature, available_llvm_features.as_ref())?
+                .llvm_feature_name;
             let desc =
                 match llvm_target_features.binary_search_by_key(&llvm_feature, |(f, _d)| f).ok() {
                     Some(index) => {
@@ -680,6 +800,10 @@ fn llvm_features_by_flags(sess: &Session, features: &mut Vec<String>) {
 /// [`rustc_codegen_ssa::TargetConfig`] based on what LLVM actually enables in this configuration.
 /// `-Ctarget-feature` should be ignored in that case since it is already processed separately.
 pub(crate) fn global_llvm_features(sess: &Session, for_cfg: bool) -> Vec<String> {
+    let oldworld_target_machine = ensure_oldworld_llvm_compat(sess);
+    let available_llvm_features =
+        oldworld_target_machine.as_ref().and_then(|tm| oldworld_llvm_feature_names(sess, tm.raw()));
+
     // Features that come earlier are overridden by conflicting features later in the string.
     // Typically we'll want more explicit settings to override the implicit ones, so:
     //
@@ -733,12 +857,25 @@ pub(crate) fn global_llvm_features(sess: &Session, for_cfg: bool) -> Vec<String>
     };
 
     let mut extend_backend_features = |feature: &str, enable: bool| {
+        if LOONGARCH_OLDWORLD
+            && matches!(sess.target.arch, Arch::LoongArch32 | Arch::LoongArch64)
+            && matches!(feature, "f" | "d")
+            && !enable
+        {
+            sess.dcx().fatal(format!(
+                "LoongArch oldworld code generation requires the `f` and `d` features to remain enabled"
+            ));
+        }
+
         let enable_disable = if enable { '+' } else { '-' };
         // We run through `to_llvm_features` when
         // passing requests down to LLVM. This means that all in-language
         // features also work on the command line instead of having two
         // different names when the LLVM name and the Rust name differ.
-        let Some(llvm_feature) = to_llvm_features(sess, feature) else { return };
+        let Some(llvm_feature) = to_llvm_features(sess, feature, available_llvm_features.as_ref())
+        else {
+            return;
+        };
 
         features.extend(
             std::iter::once(format!("{}{}", enable_disable, llvm_feature.llvm_feature_name)).chain(
@@ -784,6 +921,19 @@ pub(crate) fn global_llvm_features(sess: &Session, for_cfg: bool) -> Vec<String>
             // to avoid confusion. But only emit this warning once, under `for_cfg`.
             if for_cfg {
                 sess.dcx().emit_warn(diagnostics::UnknownLlvmTargetFeaturePrefix { feature });
+            }
+        }
+    }
+
+    if LOONGARCH_OLDWORLD && matches!(sess.target.arch, Arch::LoongArch32 | Arch::LoongArch64) {
+        for feature in ["f", "d"] {
+            if let Some(llvm_feature) =
+                loongarch_llvm_feature(feature, true, available_llvm_features.as_ref())
+            {
+                let flag = format!("+{llvm_feature}");
+                if !features.contains(&flag) {
+                    features.push(flag);
+                }
             }
         }
     }

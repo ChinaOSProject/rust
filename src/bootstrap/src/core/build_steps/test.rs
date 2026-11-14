@@ -2860,6 +2860,10 @@ Please disable assertions with `rust.debug-assertions = false`.
         cmd.env_remove("CARGO");
 
         cmd.env("RUSTC_BOOTSTRAP", "1");
+        if mode == CompiletestMode::RunMake {
+            let oldworld = self.test_compiler.stage > 0 && builder.config.rust_loongarch_oldworld;
+            cmd.env("RUSTC_LOONGARCH_OLDWORLD", if oldworld { "1" } else { "0" });
+        }
         // Override the rustc version used in symbol hashes to reduce the amount of normalization
         // needed when diffing test output.
         cmd.env("RUSTC_FORCE_RUSTC_VERSION", "compiletest");

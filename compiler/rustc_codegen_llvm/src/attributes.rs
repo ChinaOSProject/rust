@@ -646,12 +646,9 @@ pub(crate) fn llfn_attrs_from_instance<'ll, 'tcx>(
     let function_features =
         codegen_fn_attrs.target_features.iter().map(|f| f.name.as_str()).collect::<Vec<&str>>();
 
-    let function_features = function_features
-        .iter()
-        // Convert to LLVMFeatures and filter out unavailable ones
-        .flat_map(|feat| llvm_util::to_llvm_features(sess, feat))
-        // Convert LLVMFeatures & dependencies to +<feats>s
-        .flat_map(|feat| feat.into_iter().map(|f| format!("+{f}")))
+    let function_features = llvm_util::target_feature_names(sess, &function_features)
+        .into_iter()
+        .map(|feature| format!("+{feature}"))
         .chain(codegen_fn_attrs.instruction_set.iter().map(|x| match x {
             InstructionSetAttr::ArmA32 => "-thumb-mode".to_string(),
             InstructionSetAttr::ArmT32 => "+thumb-mode".to_string(),

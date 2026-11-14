@@ -941,6 +941,7 @@ impl<'ll, 'tcx> IntrinsicCallBuilderMethods<'tcx> for Builder<'_, 'll, 'tcx> {
             }
             llargument_tys.push(arg_layout.immediate_llvm_type(self));
         }
+        let rust_fn_ty = self.type_func(&llargument_tys, llreturn_ty);
 
         let fn_ptr = if let Some(&llfn) = self.intrinsic_instances.borrow().get(&instance) {
             llfn
@@ -990,6 +991,15 @@ impl<'ll, 'tcx> IntrinsicCallBuilderMethods<'tcx> for Builder<'_, 'll, 'tcx> {
         }
 
         debug!("call intrinsic {:?} with args ({:?})", instance, llargs);
+
+        if oldworld_loongarch_barrier_needs_zext(
+            self,
+            tcx.symbol_name(instance).name,
+            rust_fn_ty,
+            fn_ty,
+        ) {
+            llargs[0] = self.zext(llargs[0], self.type_i64());
+        }
 
         for (dest_ty, arg) in iter::zip(self.func_params_types(fn_ty), &mut llargs) {
             let src_ty = self.val_ty(arg);
@@ -1230,6 +1240,19 @@ fn autocast<'ll>(
     }
 }
 
+fn oldworld_loongarch_barrier_needs_zext<'ll>(
+    cx: &CodegenCx<'ll, '_>,
+    name: &str,
+    rust_fn_ty: &'ll Type,
+    llvm_fn_ty: &'ll Type,
+) -> bool {
+    crate::llvm_util::LOONGARCH_OLDWORLD
+        && matches!(cx.sess().target.arch, Arch::LoongArch32 | Arch::LoongArch64)
+        && matches!(name, "llvm.loongarch.ibar" | "llvm.loongarch.dbar")
+        && rust_fn_ty == cx.type_func(&[cx.type_i32()], cx.type_void())
+        && llvm_fn_ty == cx.type_func(&[cx.type_i64()], cx.type_void())
+}
+
 fn intrinsic_fn<'ll, 'tcx>(
     bx: &Builder<'_, 'll, 'tcx>,
     name: &str,
@@ -1271,11 +1294,13 @@ fn intrinsic_fn<'ll, 'tcx>(
         let llvm_argument_tys = bx.func_params_types(llvm_fn_ty);
         let llvm_is_variadic = bx.func_is_variadic(llvm_fn_ty);
 
-        let is_correct_signature = !llvm_is_variadic
-            && rust_argument_tys.len() == llvm_argument_tys.len()
-            && iter::once((rust_return_ty, llvm_return_ty))
-                .chain(iter::zip(rust_argument_tys, llvm_argument_tys))
-                .all(|(rust_ty, llvm_ty)| can_autocast(bx, rust_ty, llvm_ty));
+        let is_correct_signature =
+            oldworld_loongarch_barrier_needs_zext(bx, name, rust_fn_ty, llvm_fn_ty)
+                || (!llvm_is_variadic
+                    && rust_argument_tys.len() == llvm_argument_tys.len()
+                    && iter::once((rust_return_ty, llvm_return_ty))
+                        .chain(iter::zip(rust_argument_tys, llvm_argument_tys))
+                        .all(|(rust_ty, llvm_ty)| can_autocast(bx, rust_ty, llvm_ty)));
 
         if !is_correct_signature {
             tcx.dcx().emit_fatal(IntrinsicSignatureMismatch {

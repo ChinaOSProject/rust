@@ -121,6 +121,7 @@ pub(crate) const KNOWN_DIRECTIVE_NAMES: &[&str] = &[
     "ignore-sparc64",
     "ignore-spirv",
     "ignore-stable",
+    "ignore-stage0",
     "ignore-stage1",
     "ignore-stage2",
     "ignore-std-debug-assertions",

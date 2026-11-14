@@ -1318,7 +1318,11 @@ pub fn rustc_cargo_env(builder: &Builder<'_>, cargo: &mut Cargo, target: TargetS
     cargo
         .env("CFG_RELEASE", builder.rust_release())
         .env("CFG_RELEASE_CHANNEL", &builder.config.channel)
-        .env("CFG_VERSION", builder.rust_version());
+        .env("CFG_VERSION", builder.rust_version())
+        .env(
+            "RUSTC_LOONGARCH_OLDWORLD",
+            if builder.config.rust_loongarch_oldworld { "1" } else { "0" },
+        );
 
     // Some tools like Cargo detect their own git information in build scripts. When omit-git-hash
     // is enabled in bootstrap.toml, we pass this environment variable to tell build scripts to avoid

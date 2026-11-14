@@ -223,6 +223,7 @@ pub struct Config {
     pub rust_dist_src: bool,
     pub rust_codegen_backends: Vec<CodegenBackendKind>,
     pub rust_verify_llvm_ir: bool,
+    pub rust_loongarch_oldworld: bool,
     pub rust_thin_lto_import_instr_limit: Option<u32>,
     pub rust_randomize_layout: bool,
     pub rust_remap_debuginfo: bool,
@@ -618,6 +619,7 @@ impl Config {
             rustflags: rust_rustflags,
             stdlib_semver_baseline: rust_stdlib_semver_baseline,
             wasm_proc_macros,
+            loongarch_oldworld: rust_loongarch_oldworld,
         } = toml_rust.unwrap_or_default();
 
         let Llvm {
@@ -1582,6 +1584,7 @@ NOTE: Please add `--stage 2` to your command line, or if you're sure you want to
             rust_thin_lto_import_instr_limit,
             rust_validate_mir_opts,
             rust_verify_llvm_ir: rust_verify_llvm_ir.unwrap_or(false),
+            rust_loongarch_oldworld: rust_loongarch_oldworld.unwrap_or(false),
             rustc_debug_assertions: rust_rustc_debug_assertions.unwrap_or(rust_debug == Some(true)),
             rustc_default_linker: rust_default_linker,
             rustc_error_format: flags_rustc_error_format,

@@ -114,6 +114,14 @@ pub(crate) fn create_informational_target_machine(
     target_machine_factory(sess, config::OptLevel::No, &features)(sess.dcx(), config)
 }
 
+pub(crate) fn create_target_machine_with_features(
+    sess: &Session,
+    features: &[String],
+) -> OwnedTargetMachine {
+    let config = TargetMachineFactoryConfig { split_dwarf_file: None, output_obj_file: None };
+    target_machine_factory(sess, config::OptLevel::No, features)(sess.dcx(), config)
+}
+
 pub(crate) fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> OwnedTargetMachine {
     let split_dwarf_file = if tcx.sess.target_can_use_split_dwarf() {
         tcx.output_filenames(()).split_dwarf_path(

@@ -765,6 +765,7 @@
 # directory (as it links to a number of dynamic libraries). This may not be
 # desired in distributions, for example.
 #rust.rpath = true
+#rust.loongarch-oldworld = false
 
 # Additional flags to pass to `rustc`.
 # Takes precedence over bootstrap's own flags but not over per target rustflags nor env. vars. like RUSTFLAGS.
